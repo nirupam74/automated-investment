@@ -1,0 +1,13 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    # Persist logs on the host so they survive restarts/rebuilds.
+    volumes:
+      - ./logs:/app/logs
+    # The "scheduler": keep the long-running loop alive. Restarts on crash and on
+    # host reboot (as long as the Docker daemon is set to start on boot).
+    restart: unless-stopped
+    # Detached, non-interactive: REQUIRE_HUMAN_APPROVAL must be False in config.py.
+    stdin_open: false
+    tty: false

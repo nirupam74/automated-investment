@@ -1,0 +1,11 @@
+.env
+.env*
+._*
+.DS_Store
+venv/
+.venv/
+logs/
+__pycache__/
+*.pyc
+IB Gateway/
+*.dmg

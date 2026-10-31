@@ -1,0 +1,15 @@
+.env
+venv/
+__pycache__/
+*.pyc
+state.json
+controls.json
+snapshot.json
+proposals.json
+approved_orders.json
+logs/
+IB Gateway/
+IB Gateway 10.45
+.DS_Store
+._*
+*.dmg
