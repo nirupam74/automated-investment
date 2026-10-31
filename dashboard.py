@@ -15,14 +15,19 @@ import json
 import os
 import time
 
-from flask import (Flask, Response, jsonify, redirect, render_template_string,
+from urllib.parse import urlparse
+
+from flask import (Flask, Response, abort, jsonify, redirect, render_template_string,
                    request, session, url_for)
 from werkzeug.security import check_password_hash
 
 import config  # importing config loads the .env file
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-only-insecure-key")
+# No fallback key: a known key lets anyone forge a signed-in session. A random one
+# just means signing in again after a restart.
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(32)
+app.config.update(SESSION_COOKIE_SAMESITE="Strict", SESSION_COOKIE_HTTPONLY=True)
 PASSWORD_HASH = os.environ.get("DASHBOARD_PASSWORD_HASH")
 STATE_FILE = "state.json"
 CONTROLS_FILE = "controls.json"
@@ -358,6 +363,8 @@ let LB = {};             // full leaderboard: every swept name's score/trend
 function money(v){ return v==null ? "—" : Number(v).toLocaleString(undefined,{maximumFractionDigits:0}); }
 function num(v,d){ return v==null ? "—" : Number(v).toFixed(d==null?2:d); }
 function fmt(v){ return v==null ? "—" : v; }
+// Decision reasons and symbols come from the model, which reads outside news: escape before innerHTML.
+function esc(v){ return String(v).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
 /* view routing */
 document.querySelectorAll('.nav').forEach(n=>{
@@ -403,7 +410,7 @@ async function refresh(){
     document.getElementById('positions').innerHTML = pos.length ? pos.map(p=>{
       const u=p.unrealized_pct, cls=u==null?'muted':(u>=0?'gain':'loss');
       const ut=u==null?'—':(u>=0?'+':'')+u.toFixed(2)+'%';
-      return `<tr><td>${p.symbol}</td><td>${fmt(p.position)}</td><td>${fmt(p.avgCost)}</td><td>${fmt(p.last_price)}</td><td class="${cls}">${ut}</td></tr>`;
+      return `<tr><td>${esc(p.symbol)}</td><td>${fmt(p.position)}</td><td>${fmt(p.avgCost)}</td><td>${fmt(p.last_price)}</td><td class="${cls}">${ut}</td></tr>`;
     }).join('') : '<tr><td class="muted" colspan="5">No open positions.</td></tr>';
 
     document.getElementById('marketread').textContent = s.market_read || 'Waiting for the first cycle…';
@@ -411,7 +418,7 @@ async function refresh(){
     // decisions
     const dec=s.decisions||[];
     document.getElementById('decisions').innerHTML = dec.length ? dec.map(x=>
-      `<tr><td>${x.symbol}</td><td>${x.action}</td><td>${x.shares||0}</td><td><span class="tag ${x.status}">${x.status}</span></td><td class="muted">${x.reason||''}</td></tr>`
+      `<tr><td>${esc(x.symbol)}</td><td>${esc(x.action)}</td><td>${esc(x.shares||0)}</td><td><span class="tag ${esc(x.status)}">${esc(x.status)}</span></td><td class="muted">${esc(x.reason||'')}</td></tr>`
     ).join('') : '<tr><td class="muted" colspan="5">No decisions yet.</td></tr>';
 
     document.getElementById('review').textContent = d.review || 'Generated automatically after each market close.';
@@ -438,7 +445,7 @@ function renderSymbols(){
   const list = q ? names.filter(n=>n.includes(q)) : names.slice(0,48);
   const g=document.getElementById('symgrid');
   if(!names.length){ g.innerHTML='<div class="empty">The engine has not swept any names yet \u2014 they appear as it scores them (it sweeps the full S&P 500 over ~a day).</div>'; return; }
-  if(!list.length){ g.innerHTML='<div class="empty">No symbols match \u201c'+q+'\u201d.</div>'; return; }
+  if(!list.length){ g.innerHTML='<div class="empty">No symbols match \u201c'+esc(q)+'\u201d.</div>'; return; }
   const head = q ? '' : '<div style="grid-column:1/-1;color:var(--mute);font-family:var(--mono);font-size:11px;margin-bottom:2px">Showing the '+list.length+' strongest of '+names.length+' tracked \u2014 search to find any name.</div>';
   g.innerHTML=head+list.map(n=>{
     const d=detail[n], lb=LB[n], onWL=WL.includes(n);
@@ -446,7 +453,7 @@ function renderSymbols(){
     if(d){
       const chg=d.pct_change_day, chgTxt=chg==null?'\u2014':(chg>=0?'+':'')+Number(chg).toFixed(2)+'%';
       return `<div class="sym">
-        <div class="top"><div class="tk">${n}</div><span class="badge ${up?'up':'down'}">${up?'Uptrend':'Downtrend'}</span></div>
+        <div class="top"><div class="tk">${esc(n)}</div><span class="badge ${up?'up':'down'}">${up?'Uptrend':'Downtrend'}</span></div>
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:13px">
           <span class="px">$${fmt(d.last_price)}</span><span class="chg ${chg>=0?'gain':'loss'}">${chgTxt}</span>
         </div>
@@ -461,7 +468,7 @@ function renderSymbols(){
     } else {
       const ago = lb&&lb.ts ? Math.round((Date.now()/1000 - lb.ts)/3600) : null;
       return `<div class="sym">
-        <div class="top"><div class="tk">${n}</div><span class="badge ${up?'up':'down'}">${up?'Uptrend':'Downtrend'}</span></div>
+        <div class="top"><div class="tk">${esc(n)}</div><span class="badge ${up?'up':'down'}">${up?'Uptrend':'Downtrend'}</span></div>
         <div class="rows">
           <div><div class="lbl">Momentum</div>${lb?Number(lb.score).toFixed(3):'\u2014'}</div>
           <div><div class="lbl">Swept</div>${ago==null?'\u2014':(ago<=0?'just now':ago+'h ago')}</div>
@@ -554,6 +561,12 @@ LOGIN_PAGE = r"""<!doctype html>
 
 @app.before_request
 def require_login():
+    # CSRF: browsers always send Origin on cross-origin POSTs; refuse any that is not us
+    # (SameSite alone misses other localhost ports, which count as the same site).
+    if request.method == "POST":
+        origin = request.headers.get("Origin")
+        if origin and urlparse(origin).netloc != request.host:
+            abort(403)
     if request.endpoint in ("login", "static", "favicon_svg", "favicon_ico", "icon_180", "icon_512", "manifest"):
         return
     if not session.get("auth"):
@@ -614,7 +627,7 @@ def api_flatten():
 @app.route("/api/control", methods=["POST"])
 def api_control():
     c = read_controls()
-    data = request.get_json(force=True) or {}
+    data = request.get_json(silent=True) or {}  # JSON content type only
     if "dry_run" in data:
         c["dry_run"] = bool(data["dry_run"])
     if "kill_switch" in data:
